@@ -1,7 +1,7 @@
 {
-  "name": "servicenow-sync-2024",
+  "name": "servicenow-sync-2026",
   "author": "forked from Sal Costa <costas0811@hotmail.com> (http://anerrantprogrammer.com",
-  "displayName": "LMA ServiceNow Sync 2024",
+  "displayName": "LMA ServiceNow Sync 2026",
   "description": "Sync records from ServiceNow to local files using Visual Studio Code - Aquarilis",
   "repository": {
     "type": "git",
