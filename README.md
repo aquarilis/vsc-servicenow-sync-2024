@@ -10,7 +10,7 @@ If you need to get in contact with me to approve a PR email me at costas0811 ATS
 
 ## Installation
 
-[Visual Studio Code Market Place: ServiceNow Sync](https://marketplace.visualstudio.com/items?itemName=anerrantprogrammer.servicenow-sync)
+[Visual Studio Code Market Place: ServiceNow Sync](https://marketplace.visualstudio.com/items?itemName=aquarilis.servicenow-sync-2024)
 
 ## Quick Start
 
@@ -118,7 +118,7 @@ This feature is not currently developed
 
 ### 🆕 Sync a file through URL
 1. Create a Global UI Action which opens a URL in a new tab
-    - URL should match `vscode://anerrantprogrammer.servicenow-sync/sync?table=TABLE&sys_id=SYSID`
+    - URL should match `vscode://aquarilis.servicenow-sync-2024/sync?table=TABLE&sys_id=SYSID`
 2. With VSC open, click the UI Action and accept any prompts
 
 A new file will be synced creating the folder if necessary in the last open VSC workspace

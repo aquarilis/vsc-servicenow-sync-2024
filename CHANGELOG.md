@@ -4,7 +4,7 @@ All notable changes to the "servicenow-sync" extension will be documented in thi
 ## [0.4.0] - 2023-04-25
 ### Added
 - URI Handler to sync files from a URL
-    - `vscode://anerrantprogrammer.servicenow-sync/sync?table=TABLE&sys_id=SYSID`
+    - `vscode://aquarilis.servicenow-sync-2024/sync?table=TABLE&sys_id=SYSID`
     - Syncs to the last active window
 - Ability to specify a `query` property in settings files for the encoded query
 - Ability to refresh a folder by its query

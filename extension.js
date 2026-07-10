@@ -17,7 +17,7 @@ var ServiceNowSync = (function () {
     let subscriptions = [];
 
     /**
-     * Registers a URI handler which VSCode will redirect here if the authority is `anerrantprogrammer.servicenow-sync`
+     * Registers a URI handler which VSCode will redirect here if the authority is`aquarilis.servicenow-sync-2024`
      *
      * Had to include some functions through a hack because they did not exist in the handleUri scope
      */
@@ -304,7 +304,7 @@ var ServiceNowSync = (function () {
       settings.auth = "Basic " + new Buffer.from(params.username + ":" + params.password).toString("base64");
     } else if (params.type == "oauth") {
       settings.client_id = params.client_id;
-      let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://anerrantprogrammer.servicenow-sync/authenticate&client_id=${settings.client_id}&state=${settings.id}`;
+      let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://aquarilis.servicenow-sync-2024/authenticate&client_id=${settings.client_id}&state=${settings.id}`;
       await open(params.url + "/" + oauthPath);
     }
 
@@ -685,8 +685,145 @@ var ServiceNowSync = (function () {
     });
   };
 
+  ServiceNowSync.prototype._parseApiBody = function (body) {
+    if (typeof body !== "string") {
+      return body;
+    }
+
+    try {
+      return JSON.parse(body);
+    } catch (ex) {
+      return body;
+    }
+  };
+
+  ServiceNowSync.prototype._isUnauthenticatedError = function (error) {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    let message = ((error.message || "") + " " + (error.detail || "")).toLowerCase();
+    return message.indexOf("not authenticated") >= 0 || message.indexOf("required to provide auth information") >= 0;
+  };
+
+  ServiceNowSync.prototype._formatApiError = function (error, response, parsedBody, authType) {
+    let statusText = "";
+    if (response && typeof response.statusCode !== "undefined") {
+      statusText = "HTTP " + response.statusCode;
+    }
+
+    let details = [];
+    if (error && typeof error === "object") {
+      if (error.message) {
+        details.push(error.message);
+      }
+      if (error.detail) {
+        details.push(error.detail);
+      }
+    }
+
+    if (details.length === 0 && typeof parsedBody === "string" && parsedBody.trim()) {
+      details.push(parsedBody.trim());
+    }
+
+    if (details.length === 0 && error) {
+      details.push(String(error));
+    }
+
+    let message = [statusText, details.join(" - ")].filter(Boolean).join(": ");
+
+    if (authType === "basic" && this._isUnauthenticatedError(error)) {
+      message += " | Hint: ServiceNow REST API authentication may reject Basic auth after platform upgrades. Use OAuth in SN Sync settings or re-enable Basic auth for REST APIs on the instance.";
+    }
+
+    return message || "Unknown error";
+  };
+
   /**
-   * Creates and executes a ServiceNow API request and handles the results
+   * Logs in via the ServiceNow session cookie mechanism (same as background script).
+   * @returns {Promise<object>} Resolves with a populated request cookie jar
+   */
+  ServiceNowSync.prototype._getSessionJar = function () {
+    let _this = this;
+    let rootSettings = _this.getRootSettings();
+    let jar = request.jar();
+    let authDecoded = new Buffer.from(rootSettings.auth.replace("Basic ", ""), "base64").toString("ascii");
+
+    let loginOptions = {
+      method: "POST",
+      url: rootSettings.instance + "/login.do",
+      followAllRedirects: true,
+      headers: {
+        "User-Agent": "VSC-SERVICENOW-SYNC",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept-Encoding": "gzip, deflate",
+      },
+      gzip: true,
+      jar: jar,
+      form: {
+        user_name: authDecoded.split(":")[0],
+        user_password: authDecoded.split(":")[1],
+        remember_me: "true",
+        sys_action: "sysverb_login",
+      },
+    };
+
+    _this._addProxy(loginOptions);
+
+    return new Promise(function (resolve, reject) {
+      request(loginOptions, function (error, response, body) {
+        if (error) return reject(error);
+        if (!body || body.indexOf("var g_ck = '") === -1) {
+          return reject(new Error("Session login failed — could not extract session token from login.do response"));
+        }
+        resolve(jar);
+      });
+    });
+  };
+
+  /**
+   * Retries a REST API request using session cookie auth instead of the Authorization header.
+   * Used as a fallback when Basic auth is rejected by the ServiceNow REST API.
+   * @param {object} options Original request options
+   * @param {function} cb Callback to invoke on success
+   * @returns {Promise<void>}
+   */
+  ServiceNowSync.prototype._executeWithSessionFallback = function (options, cb) {
+    let _this = this;
+
+    return _this._getSessionJar().then(function (jar) {
+      let retryOptions = Object.assign({}, options);
+      retryOptions.headers = Object.assign({}, options.headers);
+      delete retryOptions.headers["Authorization"];
+      retryOptions.jar = jar;
+      retryOptions.followAllRedirects = true;
+
+      return new Promise(function (resolve, reject) {
+        request(retryOptions, function (error, response, body) {
+          let parsedBody = _this._parseApiBody(body);
+          if (error === null && parsedBody && typeof parsedBody === "object") {
+            error = parsedBody.error;
+          }
+
+          if (!error && response.statusCode >= 200 && response.statusCode < 300) {
+            let results = parsedBody;
+            if (typeof results.result !== "undefined") {
+              results = results.result;
+            }
+            cb(results);
+            resolve();
+          } else {
+            reject(error || new Error("Session fallback request failed with HTTP " + (response && response.statusCode)));
+          }
+        });
+      });
+    });
+  };
+
+  /**
+   * Creates and executes a ServiceNow API request and handles the results.
+   * When Basic auth is rejected (Zurich+ instances may disable Basic for REST),
+   * automatically retries the same request using session cookie auth.
    * @param {object} options A Request options object
    * @param {function} cb Callback function to execute when a request completes
    */
@@ -696,18 +833,14 @@ var ServiceNowSync = (function () {
     request(options, parseResults);
 
     async function parseResults(error, response, body) {
-      if (error === null) {
-        try {
-          error = JSON.parse(body).error;
-        } catch (ex) { }
+      let parsedBody = _this._parseApiBody(body);
+      if (error === null && parsedBody && typeof parsedBody === "object") {
+        error = parsedBody.error;
       }
       queryMessage.dispose();
 
-      if (!error && response.statusCode == 200) {
-        let results = body;
-        if (typeof body !== "object") {
-          results = JSON.parse(body);
-        }
+      if (!error && response.statusCode >= 200 && response.statusCode < 300) {
+        let results = parsedBody;
 
         if (typeof results.result !== "undefined") {
           results = results.result;
@@ -716,12 +849,26 @@ var ServiceNowSync = (function () {
         cb(results);
       } else {
         let rootSettings = _this.getRootSettings();
-        if (rootSettings.type == "oauth" && error.message == "User Not Authenticated") {
-          let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://anerrantprogrammer.servicenow-sync/authenticate&client_id=${rootSettings.client_id}&state=${rootSettings.id}`;
+        if (rootSettings.type == "oauth" && _this._isUnauthenticatedError(error)) {
+          let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://aquarilis.servicenow-sync-2024/authenticate&client_id=${rootSettings.client_id}&state=${rootSettings.id}`;
           await open(rootSettings.instance + "/" + oauthPath);
+        } else if (rootSettings.type == "basic" && _this._isUnauthenticatedError(error)) {
+          _this.outputChannel.appendLine("Basic auth rejected by REST API — retrying with session cookie fallback...");
+          vscode.window.setStatusBarMessage("⏳ Retrying via session login...", 3000);
+          _this._executeWithSessionFallback(options, cb).catch(function (fallbackError) {
+            let formattedError = _this._formatApiError(
+              typeof fallbackError === "object" ? fallbackError : { message: String(fallbackError) },
+              null, null, rootSettings.type
+            );
+            _this.outputChannel.appendLine("Error 0161 (session fallback also failed): " + formattedError);
+            console.dir(fallbackError);
+            vscode.window.showErrorMessage("Error 0161: " + formattedError);
+          });
         } else {
+          let formattedError = _this._formatApiError(error, response, parsedBody, rootSettings.type);
+          _this.outputChannel.appendLine("Error 0161: " + formattedError);
           console.dir(error);
-          vscode.window.showErrorMessage("Error 0161:" + error);
+          vscode.window.showErrorMessage("Error 0161: " + formattedError);
         }
       }
     }
@@ -1190,7 +1337,7 @@ var ServiceNowSync = (function () {
     var _this = this;
     let rootSettings = _this.getRootSettings();
 
-    let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://anerrantprogrammer.servicenow-sync/authenticate&client_id=${rootSettings.client_id}&state=${rootSettings.id}`;
+    let oauthPath = `oauth_auth.do?response_type=token&redirect_uri=vscode://aquarilis.servicenow-sync-2024/authenticate&client_id=${rootSettings.client_id}&state=${rootSettings.id}`;
     await open(rootSettings.instance + "/" + oauthPath);
   };
 
