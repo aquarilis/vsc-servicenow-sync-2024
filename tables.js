@@ -522,6 +522,10 @@ module.exports = {
         "field": "script",
         "extension": "js"
     }],
+    "sys_properties": [{
+        "field": "value",
+        "extension": "json"
+    }],
     "sys_push_notif_act_script": [{
         "field": "script",
         "extension": "js"
