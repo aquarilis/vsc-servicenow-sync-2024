@@ -112,8 +112,8 @@
     "keybindings": [
         {
             "command": "sn_sync.evalScript",
-            "key": "win+k",
-            "mac": "cmd+k"
+            "key": "win+k win+k",
+            "mac": "cmd+k cmd+k"
         }
     ]
   },
